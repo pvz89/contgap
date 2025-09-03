@@ -4,14 +4,29 @@ import requests
 from bs4 import BeautifulSoup
 import pandas as pd
 import plotly.express as px
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
+import xmltodict
 import re
 import time
 import os
 from dotenv import load_dotenv
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import LatentDirichletAllocation
+import numpy as np
 
-# Load environment variables
-load_dotenv()
+# Download NLTK data
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
 
 # Set page configuration
 st.set_page_config(
@@ -28,142 +43,186 @@ st.markdown("""
     .subheader {font-size: 1.5rem; color: #ff7f0e;}
     .highlight {background-color: #f0f2f6; padding: 15px; border-radius: 5px;}
     .metric-card {background-color: #f0f2f6; padding: 15px; border-radius: 5px; margin-bottom: 15px;}
+    .stProgress > div > div > div > div {background-image: linear-gradient(to right, #1f77b4, #ff7f0e);}
 </style>
 """, unsafe_allow_html=True)
 
 class ContentGapAnalyzer:
     def __init__(self):
-        self.serp_api_key = os.getenv("SERPAPI_KEY")
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
+        self.stop_words = set(stopwords.words('english'))
     
-    def extract_domain(self, url):
-        """Extract domain from URL"""
-        parsed_uri = urlparse(url)
-        return '{uri.netloc}'.format(uri=parsed_uri)
+    def find_sitemap(self, domain):
+        """Try to find the sitemap for a domain"""
+        sitemap_urls = [
+            f"https://{domain}/sitemap.xml",
+            f"https://{domain}/sitemap_index.xml",
+            f"https://{domain}/sitemap",
+            f"https://{domain}/wp-sitemap.xml",
+        ]
+        
+        for url in sitemap_urls:
+            try:
+                response = requests.get(url, headers=self.headers, timeout=10)
+                if response.status_code == 200:
+                    return url
+            except:
+                continue
+        
+        # Try to find sitemap in robots.txt
+        try:
+            robots_url = f"https://{domain}/robots.txt"
+            response = requests.get(robots_url, headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                for line in response.text.split('\n'):
+                    if line.lower().startswith('sitemap:'):
+                        return line.split(':', 1)[1].strip()
+        except:
+            pass
+        
+        return None
     
-    def get_serp_data(self, query, domain=None):
-        """
-        Get SERP data for a query (mock implementation - in real scenario, use SERP API)
-        """
-        # This is a mock implementation. In a real scenario, you would use:
-        # params = {
-        #   "q": query,
-        #   "location": "United States",
-        #   "hl": "en",
-        #   "gl": "us",
-        #   "api_key": self.serp_api_key
-        # }
-        # response = requests.get("https://serpapi.com/search", params=params)
-        # return response.json()
-        
-        # Mock data for demonstration
-        time.sleep(0.5)  # Simulate API delay
-        
-        mock_data = {
-            "organic_results": [
-                {
-                    "position": 1,
-                    "title": f"Top 10 {query} Strategies for 2023",
-                    "link": "https://example.com/article1",
-                    "snippet": f"Learn about the best {query} strategies that will help you grow your business in 2023.",
-                    "displayed_link": "example.com/blog/..."
-                },
-                {
-                    "position": 2,
-                    "title": f"How to Master {query} in 5 Easy Steps",
-                    "link": "https://competitor.com/article1",
-                    "snippet": f"Discover the five steps to mastering {query} and outperforming your competition.",
-                    "displayed_link": "competitor.com/blog/..."
-                },
-                {
-                    "position": 3,
-                    "title": f"The Ultimate Guide to {query}",
-                    "link": "https://example.com/article2",
-                    "snippet": f"Comprehensive guide covering everything you need to know about {query}.",
-                    "displayed_link": "example.com/guides/..."
-                },
-                {
-                    "position": 4,
-                    "title": f"{query} Trends and Statistics for 2023",
-                    "link": "https://competitor.com/article2",
-                    "snippet": f"Latest trends and statistics about {query} that you need to know.",
-                    "displayed_link": "competitor.com/research/..."
-                },
-                {
-                    "position": 5,
-                    "title": f"Beginner's Guide to {query}",
-                    "link": "https://example.com/article3",
-                    "snippet": f"Perfect for beginners looking to understand the basics of {query}.",
-                    "displayed_link": "example.com/beginner/..."
-                }
-            ]
-        }
-        
-        # Filter by domain if provided
-        if domain:
-            filtered_results = []
-            for result in mock_data["organic_results"]:
-                if domain in result["link"]:
-                    filtered_results.append(result)
-            return {"organic_results": filtered_results}
-        
-        return mock_data
-    
-    def get_content_topics(self, url):
-        """
-        Extract main topics from a URL (mock implementation)
-        """
-        # In a real scenario, you would fetch the page and analyze its content
-        # response = requests.get(url, headers=self.headers)
-        # soup = BeautifulSoup(response.content, 'html.parser')
-        # text = soup.get_text()
-        
-        # Mock content based on URL
-        time.sleep(0.3)  # Simulate processing time
-        
-        topic_map = {
-            "example.com": ["SEO", "Content Marketing", "Social Media", "Email Marketing", "Digital Strategy"],
-            "competitor.com": ["SEO", "PPC Advertising", "Video Marketing", "Influencer Marketing", "Analytics"]
-        }
-        
-        domain = self.extract_domain(url)
-        for site, topics in topic_map.items():
-            if site in domain:
-                return topics
-        
-        # Default return if no match
-        return ["Topic 1", "Topic 2", "Topic 3", "Topic 4", "Topic 5"]
-    
-    def analyze_content_gap(self, my_domain, competitor_domain):
-        """
-        Analyze content gaps between my domain and competitor domain
-        """
-        # Get common keywords both sites rank for
-        common_keywords = ["digital marketing", "SEO tips", "content strategy", "social media marketing"]
-        
-        my_content = {}
-        competitor_content = {}
-        
-        # Analyze content for each keyword
-        for keyword in common_keywords:
-            my_results = self.get_serp_data(keyword, my_domain)
-            competitor_results = self.get_serp_data(keyword, competitor_domain)
+    def parse_sitemap(self, sitemap_url):
+        """Parse a sitemap and return all URLs"""
+        try:
+            response = requests.get(sitemap_url, headers=self.headers, timeout=10)
+            if response.status_code != 200:
+                return []
             
-            my_content[keyword] = my_results
-            competitor_content[keyword] = competitor_results
+            # Parse XML sitemap
+            data = xmltodict.parse(response.content)
+            urls = []
+            
+            # Handle different sitemap formats
+            if 'urlset' in data and 'url' in data['urlset']:
+                for url_data in data['urlset']['url']:
+                    if 'loc' in url_data:
+                        urls.append(url_data['loc'])
+            elif 'sitemapindex' in data and 'sitemap' in data['sitemapindex']:
+                for sitemap_data in data['sitemapindex']['sitemap']:
+                    if 'loc' in sitemap_data:
+                        # Recursively parse nested sitemaps
+                        nested_urls = self.parse_sitemap(sitemap_data['loc'])
+                        urls.extend(nested_urls)
+            
+            return urls
+        except:
+            return []
+    
+    def extract_content_from_url(self, url):
+        """Extract text content from a URL"""
+        try:
+            response = requests.get(url, headers=self.headers, timeout=10)
+            if response.status_code != 200:
+                return ""
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Remove unwanted elements
+            for element in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+                element.decompose()
+            
+            # Extract text from main content areas
+            text = ""
+            content_selectors = [
+                'main', 'article', '.content', '#content', '.post', 
+                '.article', '.main-content', '[role="main"]'
+            ]
+            
+            for selector in content_selectors:
+                elements = soup.select(selector)
+                for element in elements:
+                    text += element.get_text() + "\n"
+            
+            # If no specific content found, use body
+            if not text.strip():
+                text = soup.body.get_text() if soup.body else ""
+            
+            # Clean up text
+            text = re.sub(r'\s+', ' ', text).strip()
+            return text
+        except:
+            return ""
+    
+    def extract_topics_from_text(self, text, num_topics=5):
+        """Extract topics from text using TF-IDF and LDA"""
+        if not text.strip():
+            return []
         
-        # Get unique topics for each domain
-        my_topics = self.get_content_topics(f"https://{my_domain}")
-        competitor_topics = self.get_content_topics(f"https://{competitor_domain}")
+        # Tokenize and clean text
+        words = word_tokenize(text.lower())
+        words = [word for word in words if word.isalpha() and word not in self.stop_words]
         
-        # Find content gaps (topics competitor covers but I don't)
+        if len(words) < 10:  # Not enough content
+            return []
+        
+        # Create document-term matrix
+        vectorizer = TfidfVectorizer(max_features=1000, stop_words='english')
+        dtm = vectorizer.fit_transform([' '.join(words)])
+        
+        # Apply LDA
+        lda = LatentDirichletAllocation(n_components=num_topics, random_state=42)
+        lda.fit(dtm)
+        
+        # Extract top words for each topic
+        feature_names = vectorizer.get_feature_names_out()
+        topics = []
+        
+        for topic_idx, topic in enumerate(lda.components_):
+            top_words = [feature_names[i] for i in topic.argsort()[:-6:-1]]
+            topics.append(' '.join(top_words))
+        
+        return topics
+    
+    def analyze_urls(self, urls, max_urls=20):
+        """Analyze a list of URLs and extract topics"""
+        all_topics = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for i, url in enumerate(urls[:max_urls]):
+            status_text.text(f"Analyzing {i+1}/{min(len(urls), max_urls)}: {url}")
+            progress_bar.progress((i + 1) / min(len(urls), max_urls))
+            
+            content = self.extract_content_from_url(url)
+            if content:
+                topics = self.extract_topics_from_text(content)
+                all_topics.extend(topics)
+            
+            time.sleep(0.5)  # Be polite to servers
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        return list(set(all_topics))  # Return unique topics
+    
+    def analyze_content_gap(self, my_sitemap_url, competitor_sitemap_url):
+        """Analyze content gaps between my sitemap and competitor sitemap"""
+        # Parse sitemaps
+        my_urls = self.parse_sitemap(my_sitemap_url)
+        competitor_urls = self.parse_sitemap(competitor_sitemap_url)
+        
+        if not my_urls:
+            st.error(f"Could not parse your sitemap: {my_sitemap_url}")
+            return None
+        if not competitor_urls:
+            st.error(f"Could not parse competitor sitemap: {competitor_sitemap_url}")
+            return None
+        
+        st.info(f"Found {len(my_urls)} URLs in your sitemap and {len(competitor_urls)} URLs in competitor sitemap")
+        
+        # Analyze topics
+        my_topics = self.analyze_urls(my_urls)
+        competitor_topics = self.analyze_urls(competitor_urls)
+        
+        # Find content gaps
         content_gaps = list(set(competitor_topics) - set(my_topics))
         
         return {
-            "my_content": my_content,
-            "competitor_content": competitor_content,
+            "my_urls": my_urls,
+            "competitor_urls": competitor_urls,
             "my_topics": my_topics,
             "competitor_topics": competitor_topics,
             "content_gaps": content_gaps
@@ -171,39 +230,70 @@ class ContentGapAnalyzer:
 
 def main():
     st.title("🔍 Content Gap Analyzer")
-    st.markdown("Identify content opportunities by analyzing your competitor's website")
+    st.markdown("Identify content opportunities by analyzing your competitor's sitemap")
     
     # Initialize analyzer
     analyzer = ContentGapAnalyzer()
     
     # Input section
     st.sidebar.header("Input Parameters")
-    my_domain = st.sidebar.text_input("Your Domain", "example.com")
-    competitor_domain = st.sidebar.text_input("Competitor Domain", "competitor.com")
     
-    # Add API key input (optional)
-    serp_api_key = st.sidebar.text_input("SERP API Key (optional)", type="password")
-    if serp_api_key:
-        os.environ["SERPAPI_KEY"] = serp_api_key
-        analyzer.serp_api_key = serp_api_key
+    input_method = st.sidebar.radio(
+        "Input method",
+        ["Direct sitemap URLs", "Domain names (auto-discover sitemap)"]
+    )
+    
+    if input_method == "Direct sitemap URLs":
+        my_sitemap = st.sidebar.text_input("Your Sitemap URL", "https://example.com/sitemap.xml")
+        competitor_sitemap = st.sidebar.text_input("Competitor Sitemap URL", "https://competitor.com/sitemap.xml")
+    else:
+        my_domain = st.sidebar.text_input("Your Domain", "example.com")
+        competitor_domain = st.sidebar.text_input("Competitor Domain", "competitor.com")
+        
+        if st.sidebar.button("Discover Sitemaps"):
+            with st.spinner("Looking for sitemaps..."):
+                my_sitemap = analyzer.find_sitemap(my_domain)
+                competitor_sitemap = analyzer.find_sitemap(competitor_domain)
+                
+                if my_sitemap:
+                    st.sidebar.success(f"Your sitemap found: {my_sitemap}")
+                else:
+                    st.sidebar.error("Could not find your sitemap")
+                
+                if competitor_sitemap:
+                    st.sidebar.success(f"Competitor sitemap found: {competitor_sitemap}")
+                else:
+                    st.sidebar.error("Could not find competitor sitemap")
+        else:
+            my_sitemap = ""
+            competitor_sitemap = ""
     
     analyze_btn = st.sidebar.button("Analyze Content Gap")
     
     if analyze_btn:
+        if not my_sitemap or not competitor_sitemap:
+            st.error("Please provide valid sitemap URLs")
+            return
+        
         with st.spinner("Analyzing content gaps..."):
-            results = analyzer.analyze_content_gap(my_domain, competitor_domain)
+            results = analyzer.analyze_content_gap(my_sitemap, competitor_sitemap)
+        
+        if not results:
+            return
         
         # Display results
         st.header("Content Gap Analysis Results")
         
         # Metrics
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("Your Content Topics", len(results["my_topics"]))
+            st.metric("Your URLs", len(results["my_urls"]))
         with col2:
-            st.metric("Competitor Content Topics", len(results["competitor_topics"]))
+            st.metric("Competitor URLs", len(results["competitor_urls"]))
         with col3:
-            st.metric("Content Gaps Identified", len(results["content_gaps"]))
+            st.metric("Your Topics", len(results["my_topics"]))
+        with col4:
+            st.metric("Content Gaps", len(results["content_gaps"]))
         
         # Content gaps
         st.subheader("Content Opportunities")
@@ -227,64 +317,72 @@ def main():
         topic_counts = topics_df.groupby(["Domain", "Topic"]).size().reset_index(name="Count")
         
         # Create visualization
-        fig = px.sunburst(
-            topic_counts, 
-            path=['Domain', 'Topic'], 
-            values='Count',
-            color='Domain',
-            color_discrete_map={'Your Domain':'lightblue', 'Competitor':'lightcoral'}
-        )
-        fig.update_layout(margin=dict(t=0, l=0, r=0, b=0))
-        st.plotly_chart(fig, use_container_width=True)
+        if not topic_counts.empty:
+            fig = px.sunburst(
+                topic_counts, 
+                path=['Domain', 'Topic'], 
+                values='Count',
+                color='Domain',
+                color_discrete_map={'Your Domain':'lightblue', 'Competitor':'lightcoral'}
+            )
+            fig.update_layout(margin=dict(t=0, l=0, r=0, b=0))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Not enough data to create visualization")
         
-        # Keyword analysis
-        st.subheader("Keyword Performance Comparison")
+        # URL lists
+        st.subheader("URL Details")
         
-        # Mock keyword data
-        keyword_data = {
-            "Keyword": ["digital marketing", "SEO tips", "content strategy", "social media marketing"],
-            "Your Ranking": [3, 5, 2, 8],
-            "Competitor Ranking": [1, 2, 4, 3]
-        }
-        keyword_df = pd.DataFrame(keyword_data)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("Your URLs (sample)")
+            st.write(pd.DataFrame(results["my_urls"][:10], columns=["URL"]))
         
-        # Display keyword table
-        st.dataframe(keyword_df)
+        with col2:
+            st.write("Competitor URLs (sample)")
+            st.write(pd.DataFrame(results["competitor_urls"][:10], columns=["URL"]))
         
         # Recommendations
         st.subheader("Recommendations")
-        st.markdown("""
-        1. Create content on these gap topics: **{", ".join(results['content_gaps'])}**
-        2. Improve your content on keywords where competitor ranks higher
-        3. Consider creating pillar content on topics where you have partial coverage
-        4. Analyze competitor's top-performing content for ideas on content format and angle
-        """)
+        if results["content_gaps"]:
+            st.markdown(f"""
+            1. Create content on these gap topics: **{", ".join(results['content_gaps'][:5])}**
+            2. Analyze competitor's top-performing content for ideas on content format and angle
+            3. Consider creating pillar content on topics where you have partial coverage
+            4. Improve your existing content on similar topics to better compete
+            """)
+        else:
+            st.markdown("""
+            1. Focus on creating deeper content on topics you already cover
+            2. Look for new emerging topics in your industry
+            3. Consider different content formats (video, infographics, etc.)
+            4. Improve promotion of your existing content
+            """)
         
         # Export option
-        if st.button("Export Results"):
-            # Create a DataFrame for export
-            export_data = {
-                "Content Gaps": results["content_gaps"],
-                "Your Topics": results["my_topics"],
-                "Competitor Topics": results["competitor_topics"]
-            }
-            
-            # Convert to DataFrame (needs adjustment for uneven list lengths)
-            max_len = max(len(results["content_gaps"]), len(results["my_topics"]), len(results["competitor_topics"]))
-            export_df = pd.DataFrame({
-                "Content_Gaps": results["content_gaps"] + [None] * (max_len - len(results["content_gaps"])),
-                "Your_Topics": results["my_topics"] + [None] * (max_len - len(results["my_topics"])),
-                "Competitor_Topics": results["competitor_topics"] + [None] * (max_len - len(results["competitor_topics"]))
-            })
-            
-            # Convert to CSV
-            csv = export_df.to_csv(index=False)
-            st.download_button(
-                label="Download CSV",
-                data=csv,
-                file_name="content_gap_analysis.csv",
-                mime="text/csv"
-            )
+        st.subheader("Export Results")
+        
+        # Create a DataFrame for export
+        max_len = max(len(results["my_urls"]), len(results["competitor_urls"]), 
+                     len(results["my_topics"]), len(results["competitor_topics"]),
+                     len(results["content_gaps"]))
+        
+        export_df = pd.DataFrame({
+            "Your_URLs": results["my_urls"] + [None] * (max_len - len(results["my_urls"])),
+            "Competitor_URLs": results["competitor_urls"] + [None] * (max_len - len(results["competitor_urls"])),
+            "Your_Topics": results["my_topics"] + [None] * (max_len - len(results["my_topics"])),
+            "Competitor_Topics": results["competitor_topics"] + [None] * (max_len - len(results["competitor_topics"])),
+            "Content_Gaps": results["content_gaps"] + [None] * (max_len - len(results["content_gaps"]))
+        })
+        
+        # Convert to CSV
+        csv = export_df.to_csv(index=False)
+        st.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name="content_gap_analysis.csv",
+            mime="text/csv"
+        )
 
 if __name__ == "__main__":
     main()
