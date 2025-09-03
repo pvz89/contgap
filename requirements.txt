@@ -4,4 +4,10 @@ requests
 beautifulsoup4
 pandas
 plotly
+xmltodict
 python-dotenv
+nltk
+scikit-learn
+wikipedia-api
+praw
+newspaper3k
